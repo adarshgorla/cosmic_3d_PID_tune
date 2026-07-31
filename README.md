@@ -2,13 +2,13 @@
 
 # Cosmic3D MK9 - PID Tuning Mathematics & Software Architecture Explanation
 
-This document explains the architecture of the two newly created files ([`pid_config.h`](file:///Users/adarsh/Desktop/adarsh_new/pid_config.h) and [`mk9-pid-tuning-test.ino`](file:///Users/adarsh/Desktop/adarsh_new/mk9-pid-tuning-test.ino)) and provides a rigorous, step-by-step mathematical derivation of the PID parameters.
+This document explains the architecture of the two newly created files ([`pid_config.h`](mk9-pid-tuning-test/pid_config.h) and [`mk9-pid-tuning-test.ino`](mk9-pid-tuning-test/mk9-pid-tuning-test.ino)) and provides a rigorous, step-by-step mathematical derivation of the PID parameters.
 
 ---
 
 ## 1. Overview of the 2 Code Files
 
-### A. [`pid_config.h`](file:///Users/adarsh/Desktop/adarsh_new/pid_config.h) — Central Configuration Header
+### A. [`pid_config.h`](mk9-pid-tuning-test/pid_config.h) — Central Configuration Header
 `pid_config.h` acts as a single source of truth for all physical, hardware, and algorithmic constants.
 
 * **Motor & Driver Hardware Parameters**: Defines supply voltage ($12\text{V}$), rated RPM ($60\text{ RPM}$), ESP32-S3 GPIO pin assignments for all 4 motors, and the L293D stiction threshold (`PWM_MIN_FLOOR = 60`).
@@ -19,7 +19,7 @@ This document explains the architecture of the two newly created files ([`pid_co
 
 ---
 
-### B. [`mk9-pid-tuning-test.ino`](file:///Users/adarsh/Desktop/adarsh_new/mk9-pid-tuning-test.ino) — Step-by-Step Test Engine
+### B. [`mk9-pid-tuning-test.ino`](mk9-pid-tuning-test/mk9-pid-tuning-test.ino) — Step-by-Step Test Engine
 This file implements the closed-loop control system, step-by-step test routines, and diagnostic telemetry.
 
 * **Closed-Loop Engine**:

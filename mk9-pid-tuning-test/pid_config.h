@@ -38,9 +38,9 @@
 // Calculated for 12V 60RPM Motor + L293D + AS5600 (Critically Damped zeta=1.0)
 // =============================================================================
 // Motor 0 (Tower A), Motor 1 (Tower B), Motor 2 (Tower C), Motor 3 (Extruder)
-static float DEFAULT_KP[MOTOR_COUNT] = {0.65f,  0.65f,  0.65f,  0.65f};
-static float DEFAULT_KI[MOTOR_COUNT] = {1.625f, 1.625f, 1.625f, 1.625f};
-static float DEFAULT_KD[MOTOR_COUNT] = {0.052f, 0.052f, 0.052f, 0.052f};
+extern float DEFAULT_KP[MOTOR_COUNT];
+extern float DEFAULT_KI[MOTOR_COUNT];
+extern float DEFAULT_KD[MOTOR_COUNT];
 
 // =============================================================================
 // ENCODER & I2C MULTIPLEXER SPECIFICATIONS
@@ -64,7 +64,7 @@ static float DEFAULT_KD[MOTOR_COUNT] = {0.052f, 0.052f, 0.052f, 0.052f};
 #define AS5600_COUNTS_PER_REV  4096.0f
 
 // Channel Mapping (Motor Index -> TCA9548A Channel)
-static const uint8_t MOTOR_TO_I2C_CHANNEL[MOTOR_COUNT] = {0, 1, 2, 3};
+extern const uint8_t MOTOR_TO_I2C_CHANNEL[MOTOR_COUNT];
 
 // =============================================================================
 // KINEMATICS & GEOMETRY SPECIFICATIONS
