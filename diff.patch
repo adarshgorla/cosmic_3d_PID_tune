@@ -1,0 +1,510 @@
+﻿diff --git a/delta firmware/cosmic3d-led-test-esp-32_S3/mk9-as5600pid-implementation.ino b/delta firmware/cosmic3d-led-test-esp-32_S3/mk9-as5600pid-implementation.ino
+index 7686375..9d7c725 100644
+--- a/delta firmware/cosmic3d-led-test-esp-32_S3/mk9-as5600pid-implementation.ino	
++++ b/delta firmware/cosmic3d-led-test-esp-32_S3/mk9-as5600pid-implementation.ino	
+@@ -22,31 +22,31 @@
+ #define AS5600_MAGNITUDE_H  0x1B
+ #define AS5600_MAGNITUDE_L  0x1C
+ #define TCA9548A_ADDRESS    0x70
+-#define I2C_SDA 21
+-#define I2C_SCL 22
++#define I2C_SDA 8
++#define I2C_SCL 9
+ #define I2C_TIMEOUT_MS 30
+ 
+ // --- Gear Ratio ---
+ // 15 magnet rotations = 1 motor rotation = 15 ├ù 4096 = 61440 raw AS5600 counts.
+ // encoderCount[] is in motor-rotation-scaled units. Setpoints must match.
+-#define GEAR_RATIO 15
++#define GEAR_RATIO 1
+ 
+ // --- Cartesian -> Delta IK / Encoder conversion ---
+ // Tower anchor points in millimeters.
+-const float TOWER_A_X = 0.0f;
+-const float TOWER_A_Y = 0.0f;
+-const float TOWER_A_Z = 300.0f;
++const float TOWER_A_X = 0.000f;
++const float TOWER_A_Y = 157.631f;
++const float TOWER_A_Z = 735.00f;
+ 
+-const float TOWER_B_X = 300.0f;
+-const float TOWER_B_Y = 0.0f;
+-const float TOWER_B_Z = 300.0f;
++const float TOWER_B_X = -136.513f;
++const float TOWER_B_Y = -78.816f;
++const float TOWER_B_Z = 735.00f;
+ 
+-const float TOWER_C_X = 0.0f;
+-const float TOWER_C_Y = 300.0f;
+-const float TOWER_C_Z = 300.0f;
++const float TOWER_C_X = 136.513f;
++const float TOWER_C_Y = -78.816f;
++const float TOWER_C_Z = 735.00f;
+ 
+ // Configure these to match your mechanics.
+-const float PULLEY_RADIUS_MM = 10.0f;
++const float PULLEY_RADIUS_MM = 9.5f;
+ const float HOME_X = 0.0f;
+ const float HOME_Y = 0.0f;
+ const float HOME_Z = 0.0f;
+@@ -55,6 +55,12 @@ const long MOTION_TOLERANCE_COUNTS = 5;
+ 
+ const float AS5600_COUNTS_PER_ROTATION = 4096.0f;
+ const float OUTPUT_COUNTS_PER_ROTATION = AS5600_COUNTS_PER_ROTATION;
++const float MANUAL_JOG_MM = 10.0f;
++const float COUNTS_PER_MM = OUTPUT_COUNTS_PER_ROTATION / (2.0f * PI * PULLEY_RADIUS_MM);
++
++long mmToEncoderCounts(float mm) {
++  return (long)lroundf(mm * COUNTS_PER_MM);
++}
+ 
+ float homeCableLength[3] = {0.0f, 0.0f, 0.0f};
+ bool homeCableLengthReady = false;
+@@ -67,16 +73,16 @@ int mosi = 11;
+ int cs   = 10;
+ 
+ // --- Heater & Thermistor ---
+-#define THERMISTOR_PIN      34
+-#define HEATER_PIN           5
++#define THERMISTOR_PIN      2
++#define HEATER_PIN          21
+ #define MAX_TEMP           280
+ #define HYSTERESIS           2.0f
+ #define SETPOINT             0      // Updated at runtime via MQTT: hotendtemp/VALUE
+ #define SERIES_RESISTOR   4700.0f
+ #define BETA              3950.0f
+ 
+-#define BED_THERMISTOR_PIN  35
+-#define BED_HEATER_PIN      18
++#define BED_THERMISTOR_PIN  1
++#define BED_HEATER_PIN      47
+ #define BED_MAX_TEMP       130
+ #define BED_HYSTERESIS       2.0f
+ #define BED_SETPOINT         0      // Updated at runtime via MQTT: bedtemp/VALUE
+@@ -94,20 +100,23 @@ volatile float hotendSetpoint = SETPOINT;
+ volatile float bedSetpoint    = BED_SETPOINT;
+ 
+ // --- WiFi & MQTT ---
+-const char* WIFI_SSID     = "iron man";
+-const char* WIFI_PASSWORD = "adarsh24";
+ const char* MQTT_BROKER   = "test.mosquitto.org";
+ const char* MQTT_USER     = "";
+ const char* MQTT_PASSWORD = "";
+ 
+-#define TOPIC_START  "file_transfer/start"
++#define TOPIC_START_file_start_stop  "file_transfer/start"
+ #define TOPIC_STOP   "file_transfer/data"
+-#define TOPIC_END    "file_transfer/end"
++#define TOPIC_xyz_move    "motor/xyz_move"
+ #define TOPIC_ACK    "file_transfer/ack"   // outbound only
+ #define MOTOR_START  "motor/start"
+ #define MOTOR_STOP   "motor/stop"
+ 
+ bool   messageReceived = false;
++
++// --- Cartesian State ---
++float currentX = HOME_X;
++float currentY = HOME_Y;
++float currentZ = HOME_Z;
+ String topicBuffer     = "";
+ String payloadBuffer   = "";
+ 
+@@ -126,21 +135,22 @@ int           totalChunks       = 0;
+ String        expectedChecksum  = "";
+ 
+ // --- Motor Pins ---
+-#define motorPinA1  4
+-#define motorPinA2  5
+-#define motorPinB1  6
+-#define motorPinB2  7
+-#define motorPinc1  8
+-#define motorPinc2  9
+-#define motorPind1  3
+-#define motorPind2  15
++#define motorPinA1  14
++#define motorPinA2  7
++#define motorPinB1  16
++#define motorPinB2  15
++#define motorPinc1  6
++#define motorPinc2  5
++#define motorPind1  4
++#define motorPind2  3
+ 
+ // --- Limit Switches ---
+-#define LIMIT1_PIN 36
+-#define LIMIT2_PIN 37
+-#define LIMIT3_PIN 38
++#define LIMIT1_PIN 38
++#define LIMIT2_PIN 39
++#define LIMIT3_PIN 40
++
+ 
+-// --- Encoder & Motion ---
++// --- Encoder & Motion --- 
+ volatile long encoderCount[4]  = {0, 0, 0, 0};
+ volatile int  rotation[4]      = {0, 0, 0, 0};
+ volatile long setpoint[4]      = {0, 0, 0, 0};
+@@ -178,7 +188,9 @@ enum SystemState {
+   STATE_MOTION_READ_LINE,
+   STATE_MOTION_PID,
+   STATE_MOTION_DWELL,
+-  STATE_MOTION_DONE
++  STATE_MOTION_DONE,
++  STATE_MOTION_PAUSED,
++  STATE_MANUAL_XYZ
+ };
+ 
+ volatile SystemState sysState = STATE_IDLE;
+@@ -186,6 +198,70 @@ bool m1_home = false, m2_home = false, m3_home = false;
+ long setpointHome[4] = {100, 100, 100, 100};
+ unsigned long dwellStart = 0;
+ 
++bool manualMovePending = false;
++float manualMoveDeltaX = 0.0f;
++float manualMoveDeltaY = 0.0f;
++float manualMoveDeltaZ = 0.0f;
++long manualTarget[4] = {0, 0, 0, 0};
++SystemState pausedPrintState = STATE_IDLE;
++
++bool isActivePrintState(int state) {
++  return state == STATE_MOTION_OPEN || state == STATE_MOTION_READ_LINE ||
++         state == STATE_MOTION_PID || state == STATE_MOTION_DWELL;
++}
++
++void resetManualXYZTarget() {
++  for (int i = 0; i < 4; i++) {
++    manualTarget[i] = encoderCount[i];
++  }
++  lastTimePID = millis();
++  for (int i = 0; i < 4; i++) {
++    integral[i] = 0.0f;
++    prevError[i] = 0;
++  }
++}
++
++void queueManualMove(float dx, float dy, float dz) {
++  manualMoveDeltaX = dx;
++  manualMoveDeltaY = dy;
++  manualMoveDeltaZ = dz;
++  manualMovePending = true;
++}
++
++void applyPendingManualMove() {
++  if (!manualMovePending) return;
++
++  float nextX = currentX + manualMoveDeltaX;
++  float nextY = currentY + manualMoveDeltaY;
++  float nextZ = currentZ + manualMoveDeltaZ;
++
++  long targetA = 0, targetB = 0, targetC = 0;
++  if (convertXYZToEncoderTargets(nextX, nextY, nextZ, targetA, targetB, targetC)) {
++    currentX = nextX;
++    currentY = nextY;
++    currentZ = nextZ;
++    manualTarget[0] = targetA;
++    manualTarget[1] = targetB;
++    manualTarget[2] = targetC;
++
++    Serial.printf("XYZ %.2f %.2f %.2f\n", currentX, currentY, currentZ);
++    Serial.printf("Targets %ld %ld %ld\n", targetA, targetB, targetC);
++
++    lastTimePID = millis();
++    for (int i = 0; i < 4; i++) {
++      integral[i] = 0.0f;
++      prevError[i] = 0;
++    }
++  } else {
++    Serial.println("[MANUAL] IK calculation failed, move discarded.");
++  }
++
++  manualMovePending = false;
++  manualMoveDeltaX = 0.0f;
++  manualMoveDeltaY = 0.0f;
++  manualMoveDeltaZ = 0.0f;
++}
++
+ // =============================================================================
+ // NVS
+ // =============================================================================
+@@ -551,9 +627,9 @@ void mqttReconnect() {
+   Serial.print("[MQTT] Reconnecting... ");
+   if (mqttClient.connect(MQTT_BROKER, 1883)) {
+     Serial.println("connected Γ£à");
+-    mqttClient.subscribe(TOPIC_START);
++    mqttClient.subscribe(TOPIC_START_file_start_stop);
+     mqttClient.subscribe(TOPIC_STOP);
+-    mqttClient.subscribe(TOPIC_END);
++    mqttClient.subscribe(TOPIC_xyz_move);
+     mqttClient.subscribe(MOTOR_START);
+     mqttClient.subscribe(MOTOR_STOP);
+   } else {
+@@ -765,9 +841,9 @@ void mk9Setup() {
+       Serial.print("[MQTT] Failed, error="); Serial.println(mqttClient.connectError());
+     } else {
+       Serial.println("[MQTT] Connected Γ£à");
+-      mqttClient.subscribe(TOPIC_START);
++      mqttClient.subscribe(TOPIC_START_file_start_stop);
+       mqttClient.subscribe(TOPIC_STOP);
+-      mqttClient.subscribe(TOPIC_END);
++      mqttClient.subscribe(TOPIC_xyz_move);
+       mqttClient.subscribe(MOTOR_START);
+       mqttClient.subscribe(MOTOR_STOP);
+     }
+@@ -818,19 +894,31 @@ void mk9Loop() {
+     messageReceived = false;
+     Serial.printf("[LOOP] Topic: %s\n", topicBuffer.c_str());
+ 
+-    // Emergency stop ΓÇö works from ANY state
+-    if (topicBuffer == MOTOR_STOP) {
+-      Serial.println("[MOTION] Stop.");
+-      stopAllMotors();
+-      if (file) file.close();
+-      sysState = STATE_IDLE;
++    // Emergency stop / pause ΓÇö works from ANY state
++    if (topicBuffer == MOTOR_STOP ) {
++      if (payloadBuffer == "STOP") {
++        Serial.println("[MOTION] Stop.");
++        stopAllMotors();
++        if (file) file.close();
++        sysState = STATE_IDLE;
++        pausedPrintState = STATE_IDLE;
++        manualMovePending = false;
++      } else if (payloadBuffer == "PAUSE") {
++        if (isActivePrintState(sysState)) {
++          Serial.println("[MOTION] Pause requested. Pausing print safely...");
++          pausedPrintState = sysState;
++          sysState = STATE_MOTION_PAUSED;
++        } else {
++          Serial.println("[MOTION] Pause requested but no active print running.");
++        }
++      }
+     }
+ 
+     // -------------------------------------------------------------------------
+     // file_transfer/start
+     // '|' = file init | '/' = command with value | plain = bare command
+     // -------------------------------------------------------------------------
+-    else if (topicBuffer == TOPIC_START) {
++    else if (topicBuffer == TOPIC_START_file_start_stop) {
+ 
+       if (payloadBuffer.indexOf('|') != -1) {
+         int pipe1 = payloadBuffer.indexOf('|');
+@@ -882,6 +970,30 @@ void mk9Loop() {
+           if (file) file.close();
+           sysState = STATE_IDLE;
+         }
++        else if (command == "end_of_file_transfer") {
++          Serial.println("[CMD] End of file transfer command received, but no file transfer in progress.");
++          MD5Builder md5;
++          File f = SD.open(fileName.c_str());
++          if (f) {
++            md5.begin();
++            md5.addStream(f, f.size());
++            md5.calculate();
++            String computed = md5.toString();
++            f.close();
++            Serial.printf("[XFER] Expected: %s\n", expectedChecksum.c_str());
++            Serial.printf("[XFER] Computed: %s\n", computed.c_str());
++            if (computed.equalsIgnoreCase(expectedChecksum)) {
++              Serial.println("[XFER] Γ£à Verified.");
++              mqttClient.beginMessage(TOPIC_ACK); mqttClient.print("SUCCESS"); mqttClient.endMessage();
++            } else {
++              Serial.println("[XFER] Γ¥î Checksum MISMATCH.");
++              mqttClient.beginMessage(TOPIC_ACK); mqttClient.print("FAIL_CHECKSUM"); mqttClient.endMessage();
++            }
++          } else {
++            Serial.println("[XFER] Could not open file for MD5.");
++          }
++          fileReceiving = false;
++            }
+       }
+     }
+ 
+@@ -919,39 +1031,87 @@ void mk9Loop() {
+     }
+ 
+     // -------------------------------------------------------------------------
+-    // file_transfer/end ΓÇö MD5 verification
++    // manual XYZ jogging ΓÇö separate manual state flow
+     // -------------------------------------------------------------------------
+-    else if (topicBuffer == TOPIC_END) {
+-      MD5Builder md5;
+-      File f = SD.open(fileName.c_str());
+-      if (f) {
+-        md5.begin();
+-        md5.addStream(f, f.size());
+-        md5.calculate();
+-        String computed = md5.toString();
+-        f.close();
+-        Serial.printf("[XFER] Expected: %s\n", expectedChecksum.c_str());
+-        Serial.printf("[XFER] Computed: %s\n", computed.c_str());
+-        if (computed.equalsIgnoreCase(expectedChecksum)) {
+-          Serial.println("[XFER] Γ£à Verified.");
+-          mqttClient.beginMessage(TOPIC_ACK); mqttClient.print("SUCCESS"); mqttClient.endMessage();
++    else if (topicBuffer == TOPIC_xyz_move) {
++      String cmd = payloadBuffer;
++      cmd.trim();
++      cmd.toUpperCase();
++
++      char firstChar = cmd.length() > 0 ? cmd.charAt(0) : '\0';
++      float dx = 0.0f, dy = 0.0f, dz = 0.0f;
++      bool valid = false;
++
++      if (firstChar == 'X' || firstChar == 'Y' || firstChar == 'Z') {
++        if (cmd.length() >= 2) {
++          char axis = firstChar;
++          char sign = cmd.charAt(1);
++          if (sign == '+' || sign == '-') {
++            float amount = cmd.substring(2).toFloat();
++            if (amount == 0.0f) amount = 1.0f;
++            if (sign == '-') amount = -amount;
++
++            if (axis == 'X') dx = amount;
++            else if (axis == 'Y') dy = amount;
++            else if (axis == 'Z') dz = amount;
++            valid = true;
++          }
++        }
++      } else {
++        // Legacy/alternate format support (e.g. x+, y-, z+)
++        if (cmd == "X+") { dx = MANUAL_JOG_MM; valid = true; }
++        else if (cmd == "X-") { dx = -MANUAL_JOG_MM; valid = true; }
++        else if (cmd == "Y+") { dy = MANUAL_JOG_MM; valid = true; }
++        else if (cmd == "Y-") { dy = -MANUAL_JOG_MM; valid = true; }
++        else if (cmd == "Z+") { dz = MANUAL_JOG_MM; valid = true; }
++        else if (cmd == "Z-") { dz = -MANUAL_JOG_MM; valid = true; }
++      }
++
++      if (valid) {
++        Serial.printf("[CMD] Received XYZ move command: %s  ΓåÆ delta (dx:%.2f dy:%.2f dz:%.2f)\n",
++                      cmd.c_str(), dx, dy, dz);
++        if (isActivePrintState(sysState)) {
++          Serial.println("[CMD] Manual XYZ move requested during active print. Pausing print first.");
++          queueManualMove(dx, dy, dz);
++          pausedPrintState = sysState;
++          sysState = STATE_MOTION_PAUSED;
++        } else if (sysState == STATE_MOTION_PAUSED || sysState == STATE_MANUAL_XYZ || sysState == STATE_IDLE) {
++          if (sysState != STATE_MANUAL_XYZ) {
++            resetManualXYZTarget();
++            sysState = STATE_MANUAL_XYZ;
++          }
++          queueManualMove(dx, dy, dz);
+         } else {
+-          Serial.println("[XFER] Γ¥î Checksum MISMATCH.");
+-          mqttClient.beginMessage(TOPIC_ACK); mqttClient.print("FAIL_CHECKSUM"); mqttClient.endMessage();
++          Serial.println("[CMD] Manual XYZ move blocked. Printer busy.");
+         }
+       } else {
+-        Serial.println("[XFER] Could not open file for MD5.");
++        Serial.printf("[CMD] Unknown XYZ jog payload: %s\n", payloadBuffer.c_str());
+       }
+-      fileReceiving = false;
+     }
+ 
+     // -------------------------------------------------------------------------
+-    // motor/start ΓÇö begin motion (only from IDLE)
++    // motor/start ΓÇö begin/resume motion
+     // -------------------------------------------------------------------------
+-    else if (topicBuffer == MOTOR_START && sysState == STATE_IDLE) {
+-      Serial.println("[MOTION] Start.");
+-      for (int i = 0; i < 4; i++) { updateEncoderFromAS5600(i); totalRotations[i] = 0; }
+-      sysState = STATE_MOTION_OPEN;
++    else if (topicBuffer == MOTOR_START) {
++      if (payloadBuffer == "RESUME" && (sysState == STATE_MOTION_PAUSED || sysState == STATE_MANUAL_XYZ)) {
++        if (pausedPrintState != STATE_IDLE) {
++          Serial.println("[MOTION] Resuming paused print.");
++          sysState = pausedPrintState;
++          pausedPrintState = STATE_IDLE;
++          manualMovePending = false;
++          manualMoveDeltaX = 0.0f;
++          manualMoveDeltaY = 0.0f;
++          manualMoveDeltaZ = 0.0f;
++        } else {
++          Serial.println("[MOTION] Resume requested but no paused print available. Returning to IDLE.");
++          stopAllMotors();
++          sysState = STATE_IDLE;
++        }
++      } else if (sysState == STATE_IDLE) {
++        Serial.println("[MOTION] Start.");
++        for (int i = 0; i < 4; i++) { updateEncoderFromAS5600(i); totalRotations[i] = 0; }
++        sysState = STATE_MOTION_OPEN;
++      }
+     }
+   }
+ 
+@@ -966,6 +1126,45 @@ void mk9Loop() {
+     case STATE_IDLE:
+       break;
+ 
++    // --- MOTION: paused safely, waiting for manual input or resume ---
++    case STATE_MOTION_PAUSED: {
++      stopAllMotors();
++      if (manualMovePending) {
++        resetManualXYZTarget();
++        applyPendingManualMove();
++        sysState = STATE_MANUAL_XYZ;
++      }
++      break;
++    }
++
++    // --- MANUAL XYZ: dedicated repositioning state ---
++    case STATE_MANUAL_XYZ: {
++      unsigned long currentTime = millis();
++      float dt = (currentTime - lastTimePID) / 1000.0f;
++      if (dt <= 0.0f) dt = 0.001f;
++      lastTimePID = currentTime;
++
++      for (int i = 0; i < 4; i++) updateEncoderFromAS5600(i);
++      if (manualMovePending) applyPendingManualMove();
++
++      bool allTargetReached = true;
++      for (int i = 0; i < 4; i++) {
++        if (abs(manualTarget[i] - encoderCount[i]) > MOTION_TOLERANCE_COUNTS) {
++          allTargetReached = false;
++          break;
++        }
++      }
++
++      if (allTargetReached) {
++        stopAllMotors();
++      } else {
++        for (int i = 0; i < 4; i++) {
++          driveMotor(i, calculatePID(i, manualTarget[i], dt));
++        }
++      }
++      break;
++    }
++
+     // --- HOMING: drive toward limit switches ---
+     case STATE_HOMING_SEEK: {
+       if (!m1_home) {
+@@ -1046,6 +1245,9 @@ void mk9Loop() {
+         stopAllMotors();
+         checkAllEncoders();
+         Serial.println("[HOME] Complete. Axes at standoff (100).");
++        currentX = HOME_X;
++        currentY = HOME_Y;
++        currentZ = HOME_Z;
+         sysState = STATE_IDLE;
+       } else {
+         for (int i = 0; i < 4; i++) driveMotor(i, calculatePID(i, setpointHome[i], dt));
+@@ -1112,6 +1314,10 @@ void mk9Loop() {
+       setpoint[2] = targetC;
+       setpoint[3] = (long)lroundf(targetE * STEPS_PER_MM_E);
+ 
++      currentX = targetX;
++      currentY = targetY;
++      currentZ = targetZ;
++
+       Serial.printf("[MOTION] XYZE: %.3f %.3f %.3f %.3f\n",
+                     targetX, targetY, targetZ, targetE);
+       Serial.printf("[MOTION] Setpoints(counts) -> A:%ld  B:%ld  C:%ld  E:%ld\n",
+@@ -1144,7 +1350,7 @@ void mk9Loop() {
+         for (int i = 0; i < 4; i++) driveMotor(i, calculatePID(i, setpoint[i], dt));
+       }
+       break;
+-    }
++    } 
+ 
+     // --- MOTION: cleanup ---
+     case STATE_MOTION_DONE: {
