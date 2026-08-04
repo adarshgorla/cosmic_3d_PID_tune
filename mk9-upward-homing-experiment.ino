@@ -29,6 +29,9 @@
 // Limit Switches (INPUT_PULLUP: HIGH = unclicked, LOW = clicked)
 #define SWITCH_CLICKED LOW
 
+// Encoder Direction Normalization (-1 for Tower A to make upward count positive)
+const int ENCODER_SIGN[MOTOR_COUNT] = {-1, 1, 1, 1};
+
 // =============================================================================
 // GLOBAL STATE & VARIABLES
 // =============================================================================
@@ -147,7 +150,7 @@ void updateEncoderFromAS5600(int motorIndex) {
   delayMicroseconds(100);
 
   uint16_t currentAngle = readRawAngle();
-  long diff = (long)currentAngle - (long)lastAngle[motorIndex];
+  long diff = ((long)currentAngle - (long)lastAngle[motorIndex]) * ENCODER_SIGN[motorIndex];
 
   if (diff > 2048) {
     diff -= 4096;
