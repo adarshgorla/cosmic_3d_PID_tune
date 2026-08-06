@@ -1,13 +1,11 @@
 // mk9-as5600-shard.cpp
-// ESP32-S3 | Cosmic3D MK9 | AS5600 Magnetic Encoder Edition
+// ESP32-S3 | Cosmic3D MK9 | AS5600 Magnetic Encoder Edition (Serial Monitored & SD Logged)
 
-#include <WiFi.h>
-#include <ArduinoMqttClient.h>
+#include <WiFi.h> // Kept only if main .ino file relies on it for background tasks
 #include "FS.h"
 #include "SD.h"
 #include "SPI.h"
 #include <Preferences.h>
-#include <MD5Builder.h>
 #include <Wire.h>
 
 // --- AS5600 & TCA9548A ---
@@ -94,40 +92,14 @@ bool bedHeaterOn    = false;
 volatile float hotendSetpoint = SETPOINT;
 volatile float bedSetpoint    = BED_SETPOINT;
 
-// --- WiFi & MQTT ---
-const char* MQTT_BROKER   = "broker.emqx.io";
-const char* MQTT_USER     = "";
-const char* MQTT_PASSWORD = "";
-
-#define TOPIC_START_file_start_stop  "file_transfer/start"
-#define TOPIC_STOP   "file_transfer/data"
-#define TOPIC_xyz_move    "motor/xyz_move"
-#define TOPIC_ACK    "file_transfer/ack"   
-#define MOTOR_START  "motor/start"
-#define MOTOR_STOP   "motor/stop"
-
-bool   messageReceived = false;
-
 // --- Cartesian State ---
 float currentX = HOME_X;
 float currentY = HOME_Y;
 float currentZ = HOME_Z;
-String topicBuffer     = "";
-String payloadBuffer   = "";
-
-WiFiClient  wifiClient;
-MqttClient  mqttClient(wifiClient);
 
 // --- NVS ---
 Preferences prefs;
-long          lastReceivedChunk = -1;
-unsigned long lastAttemptTime   = 0;
-const unsigned long reconnectDelay = 5000;
-bool          printedLostMsg    = false;
-bool          fileReceiving     = false;
-String        fileName          = "";
-int           totalChunks       = 0;
-String        expectedChecksum  = "";
+String fileName = "";
 
 // --- Motor Pins & LEDC PWM ---
 #define motorPinA1  14
@@ -202,14 +174,14 @@ uint8_t switchDebounceCounter[3] = {0, 0, 0};
 // =============================================================================
 void logToSD(String message) {
   String logEntry = String(millis()) + " ms | " + message + "\n";
-  appendFile(SD, "/blackbox_log.txt", logEntry.c_str());
+  File f = SD.open("/blackbox_log.txt", FILE_APPEND);  
+  if (f) { f.print(logEntry.c_str()); f.close(); }
   Serial.print("[LOG] " + logEntry);
 }
 
 // =============================================================================
 // HELPER FUNCTIONS
 // =============================================================================
-
 bool checkDebouncedLimitSwitch(int towerIdx, int pin) {
   if (digitalRead(pin) == LOW) {
     switchDebounceCounter[towerIdx]++;
@@ -267,26 +239,25 @@ void applyPendingManualMove() {
 }
 
 // =============================================================================
-// NVS & SD
+// SD
 // =============================================================================
-void saveState() {
-  prefs.putString("fileName", fileName); prefs.putInt("totalChunks", totalChunks);
-  prefs.putInt("lastChunk", lastReceivedChunk); prefs.putString("checksum", expectedChecksum);
+void listDir(fs::FS &fs, const char *dirname, uint8_t levels) {
+  Serial.printf("[SD] Listing: %s\n", dirname);
+  File root = fs.open(dirname);
+  if (!root || !root.isDirectory()) return;
+  File f = root.openNextFile();
+  while (f) {
+    if (f.isDirectory()) {
+      Serial.print("  DIR : "); Serial.println(f.name());
+      if (levels) listDir(fs, f.name(), levels - 1);
+    } else {
+      Serial.print("  FILE: "); Serial.print(f.name());
+      Serial.print("  SIZE: "); Serial.println(f.size());
+    }
+    f = root.openNextFile();
+  }
 }
 
-void restoreState() {
-  fileName = prefs.getString("fileName", ""); totalChunks = prefs.getInt("totalChunks", 0);
-  lastReceivedChunk = prefs.getInt("lastChunk", -1); expectedChecksum = prefs.getString("checksum", "");
-}
-
-void loadState() { lastReceivedChunk = prefs.getLong("lastChunk", -1); }
-
-void listDir(fs::FS &fs, const char *dirname, uint8_t levels) { /* Unchanged from your base */ }
-void writeFile(fs::FS &fs, const char *path, const char *message) { /* Unchanged from your base */ }
-void appendFile(fs::FS &fs, const char *path, const char *message) {
-  File f = fs.open(path, FILE_APPEND);  
-  if (f) { f.print(message); f.close(); }
-}
 int countLinesInFile(fs::FS &fs, const char *path) {
   File tempFile = fs.open(path);
   if (!tempFile) return -1;
@@ -531,20 +502,6 @@ void checkAllEncoders() {
 }
 
 // =============================================================================
-// MQTT RECONNECT
-// =============================================================================
-void mqttReconnect() {
-  if (mqttClient.connect(MQTT_BROKER, 1883)) {
-    mqttClient.subscribe(TOPIC_START_file_start_stop); mqttClient.subscribe(TOPIC_STOP);
-    mqttClient.subscribe(TOPIC_xyz_move); mqttClient.subscribe(MOTOR_START); mqttClient.subscribe(MOTOR_STOP);
-  }
-}
-void sendmessage(String publishtopic, String messagetosend){
-  if (!mqttClient.connected()) return;
-  mqttClient.beginMessage(publishtopic); mqttClient.print(messagetosend); mqttClient.endMessage();
-}
-
-// =============================================================================
 // HEATER CONTROL
 // =============================================================================
 void runHeaterControl() {
@@ -670,27 +627,16 @@ void mk9Setup() {
   SPI.begin(sck, miso, mosi, cs);
   #endif
   delay(1);
-  SD.begin(cs);
+  if (!SD.begin(cs)) {
+    Serial.println("[SD] Init FAILED!");
+  } else {
+    Serial.printf("[SD] Init OK. %lluMB\n", SD.cardSize() / (1024 * 1024));
+  }
   delay(1);
-
-  prefs.begin("file-transfer", false);
-  restoreState();
-  delay(1);
-
-  mqttClient.setId("cosmic3d-mk9-as5600");
-  if (strlen(MQTT_USER) > 0) mqttClient.setUsernamePassword(MQTT_USER, MQTT_PASSWORD);
-
-  mqttClient.onMessage([](int messageSize) {
-    topicBuffer   = mqttClient.messageTopic();
-    payloadBuffer = "";
-    while (mqttClient.available()) payloadBuffer += (char)mqttClient.read();
-    messageReceived = true;
-  });
-
-  if (WiFi.status() == WL_CONNECTED) mqttClient.connect(MQTT_BROKER, 1883);
 
   initializeHomeCableLengths();
   mk9CoreReady = true;
+  Serial.println("[SETUP] Printer Ready. Awaiting Serial Commands...");
 }
 
 bool isPrinterActive() { return sysState != STATE_IDLE && sysState != STATE_MOTION_PAUSED; }
@@ -700,13 +646,6 @@ bool isPrinterActive() { return sysState != STATE_IDLE && sysState != STATE_MOTI
 // =============================================================================
 void mk9Loop() {
   if (!mk9CoreReady) { delay(1); return; }
-
-  if (!mqttClient.connected()) {
-    if (WiFi.status() == WL_CONNECTED && !isPrinterActive()) {
-      unsigned long now = millis();
-      if (now - lastAttemptTime > reconnectDelay) { lastAttemptTime = now; mqttReconnect(); }
-    }
-  } else { mqttClient.poll(); }
 
   static unsigned long lastHeaterPoll = 0;
   if (millis() - lastHeaterPoll >= HEATER_POLL_MS) { lastHeaterPoll = millis(); runHeaterControl(); }
@@ -731,59 +670,66 @@ void mk9Loop() {
     }
   }
 
-  if (messageReceived) {
-    messageReceived = false;
+  // ===========================================================================
+  // SERIAL COMMAND LISTENER (Replaces MQTT)
+  // ===========================================================================
+  if (Serial.available() > 0) {
+    String payloadBuffer = Serial.readStringUntil('\n');
+    payloadBuffer.trim();
 
-    if (topicBuffer == MOTOR_STOP ) {
-      if (payloadBuffer == "STOP") {
-        stopAllMotors(); if (file) file.close();
+    if (payloadBuffer.length() > 0) {
+      logToSD("USER COMMAND: " + payloadBuffer); 
+      String cmd = payloadBuffer;
+      cmd.toUpperCase(); 
+
+      if (cmd == "STOP") {
+        stopAllMotors(); 
+        if (file) file.close();
         sysState = STATE_IDLE; pausedPrintState = STATE_IDLE; manualMovePending = false;
-      } else if (payloadBuffer == "PAUSE") {
-        if (isActivePrintState(sysState)) { pausedPrintState = sysState; sysState = STATE_MOTION_PAUSED; }
-      }
-    }
-    else if (topicBuffer == TOPIC_START_file_start_stop) {
-      if (payloadBuffer.indexOf('|') != -1) { /* Legacy Parsing Omitted for Brevity */ }
-      else if (payloadBuffer.indexOf('/') != -1) {
-        int sep = payloadBuffer.indexOf('/'); String command = payloadBuffer.substring(0, sep);
-        int value = payloadBuffer.substring(sep + 1).toInt();
-        if (command == "hotendtemp") hotendSetpoint = (float)value;
-        else if (command == "bedtemp") bedSetpoint = (float)value;
-      }
-      else {
-        String command = payloadBuffer; command.trim();
-        if (command == "home" && sysState == STATE_IDLE) {
-          m1_home = false; m2_home = false; m3_home = false;
-          switchDebounceCounter[0] = 0; switchDebounceCounter[1] = 0; switchDebounceCounter[2] = 0;
-          sysState = STATE_HOMING_SEEK;
+        logToSD("System Halted by User.");
+      } 
+      else if (cmd == "PAUSE") {
+        if (isActivePrintState(sysState)) { 
+          pausedPrintState = sysState; sysState = STATE_MOTION_PAUSED; logToSD("Print Paused.");
         }
-        else if (command == "stop") { stopAllMotors(); if (file) file.close(); sysState = STATE_IDLE; }
-        else if (command == "end_of_file_transfer") { fileReceiving = false; }
       }
-    }
-    else if (topicBuffer == TOPIC_xyz_move) {
-      String cmd = payloadBuffer; cmd.trim(); cmd.toUpperCase();
-      char firstChar = cmd.length() > 0 ? cmd.charAt(0) : '\0';
-      float dx = 0.0f, dy = 0.0f, dz = 0.0f; bool valid = false;
-
-      if (firstChar == 'X' || firstChar == 'Y' || firstChar == 'Z') {
-        if (cmd.length() >= 2) {
-          char axis = firstChar; char sign = cmd.charAt(1);
-          if (sign == '+' || sign == '-') {
-            float amount = cmd.substring(2).toFloat();
-            if (amount == 0.0f) amount = 1.0f;
-            if (sign == '-') amount = -amount;
-            if (axis == 'X') dx = amount; else if (axis == 'Y') dy = amount; else if (axis == 'Z') dz = amount;
-            valid = true;
-          }
+      else if (cmd == "RESUME") {
+        if (sysState == STATE_MOTION_PAUSED || sysState == STATE_MANUAL_XYZ) {
+          if (pausedPrintState != STATE_IDLE) {
+            sysState = pausedPrintState; pausedPrintState = STATE_IDLE; manualMovePending = false;
+            logToSD("Print Resumed.");
+          } else { stopAllMotors(); sysState = STATE_IDLE; }
         }
-      } else {
-        if (cmd == "X+") { dx = MANUAL_JOG_MM; valid = true; } else if (cmd == "X-") { dx = -MANUAL_JOG_MM; valid = true; }
-        else if (cmd == "Y+") { dy = MANUAL_JOG_MM; valid = true; } else if (cmd == "Y-") { dy = -MANUAL_JOG_MM; valid = true; }
-        else if (cmd == "Z+") { dz = MANUAL_JOG_MM; valid = true; } else if (cmd == "Z-") { dz = -MANUAL_JOG_MM; valid = true; }
       }
+      else if (cmd == "HOME" && sysState == STATE_IDLE) {
+        m1_home = false; m2_home = false; m3_home = false;
+        switchDebounceCounter[0] = 0; switchDebounceCounter[1] = 0; switchDebounceCounter[2] = 0;
+        sysState = STATE_HOMING_SEEK;
+        logToSD("Homing Sequence Initiated.");
+      }
+      else if (cmd.startsWith("START ")) {
+        if (sysState == STATE_IDLE) {
+          fileName = payloadBuffer.substring(6); 
+          fileName.trim();
+          if (!fileName.startsWith("/")) fileName = "/" + fileName; 
+          
+          for (int i = 0; i < 4; i++) { updateEncoderFromAS5600(i); totalRotations[i] = 0; }
+          sysState = STATE_MOTION_OPEN;
+          logToSD("Starting print file: " + fileName);
+        } else { Serial.println("Cannot start print. Printer is not IDLE."); }
+      }
+      else if (cmd.startsWith("HOTEND ")) {
+        hotendSetpoint = cmd.substring(7).toFloat(); logToSD("Hotend set to: " + String(hotendSetpoint));
+      }
+      else if (cmd.startsWith("BED ")) {
+        bedSetpoint = cmd.substring(4).toFloat(); logToSD("Bed set to: " + String(bedSetpoint));
+      }
+      else if (cmd == "X+" || cmd == "X-" || cmd == "Y+" || cmd == "Y-" || cmd == "Z+" || cmd == "Z-") {
+        float dx = 0.0f, dy = 0.0f, dz = 0.0f;
+        if (cmd == "X+") dx = MANUAL_JOG_MM; else if (cmd == "X-") dx = -MANUAL_JOG_MM;
+        else if (cmd == "Y+") dy = MANUAL_JOG_MM; else if (cmd == "Y-") dy = -MANUAL_JOG_MM;
+        else if (cmd == "Z+") dz = MANUAL_JOG_MM; else if (cmd == "Z-") dz = -MANUAL_JOG_MM;
 
-      if (valid) {
         if (isActivePrintState(sysState)) {
           queueManualMove(dx, dy, dz); pausedPrintState = sysState; sysState = STATE_MOTION_PAUSED;
         } else if (sysState == STATE_MOTION_PAUSED || sysState == STATE_MANUAL_XYZ || sysState == STATE_IDLE) {
@@ -791,15 +737,8 @@ void mk9Loop() {
           queueManualMove(dx, dy, dz);
         }
       } 
-    }
-    else if (topicBuffer == MOTOR_START) {
-      if (payloadBuffer == "RESUME" && (sysState == STATE_MOTION_PAUSED || sysState == STATE_MANUAL_XYZ)) {
-        if (pausedPrintState != STATE_IDLE) {
-          sysState = pausedPrintState; pausedPrintState = STATE_IDLE; manualMovePending = false;
-        } else { stopAllMotors(); sysState = STATE_IDLE; }
-      } else if (sysState == STATE_IDLE) {
-        for (int i = 0; i < 4; i++) { updateEncoderFromAS5600(i); totalRotations[i] = 0; }
-        sysState = STATE_MOTION_OPEN;
+      else {
+        Serial.println("Unknown Command. Available: HOME, STOP, PAUSE, RESUME, START /file, HOTEND 200, BED 60, X+, X-, Y+, Y-, Z+, Z-");
       }
     }
   }
@@ -866,9 +805,9 @@ void mk9Loop() {
       // FIX 1: Explicitly select correct channel before zero-read
       for (int i = 0; i < 4; i++) {
         if (as5600Ready && selectI2CChannel(motorToChannel[i])) {
-          delay(1); // Standardized delay
+          delay(1); 
           lastAngle[i] = readRawAngle();
-          disableAllI2CChannels(); // Clean up channel selection
+          disableAllI2CChannels();
         } else {
           lastAngle[i] = 0;
         }
@@ -967,7 +906,7 @@ void mk9Loop() {
       if (allReached) {
         stopAllMotors();
         Serial.println("[MOTION] ALL TARGETS REACHED");
-        logToSD("Motion targets reached line: " + String(myconut)); // Logging success
+        logToSD("Motion targets reached line: " + String(myconut)); 
         myconut++;
         dwellStart = millis();
         sysState = STATE_MOTION_DWELL;
