@@ -1,0 +1,967 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cosmic Polar 400 — Axis Simulator & G-Code Printer</title>
+  <style>
+    :root {
+      --bg: #090d16;
+      --panel: rgba(15, 23, 42, 0.92);
+      --accent: #38bdf8;
+      --gold: #f59e0b;
+      --green: #10b981;
+      --red: #ef4444;
+      --dim: #64748b;
+      --text: #f1f5f9;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', system-ui, sans-serif; }
+    body { background: var(--bg); color: var(--text); overflow: hidden; height: 100vh; width: 100vw; }
+    #canvas-container { position: absolute; inset: 0; z-index: 1; }
+
+    .hud {
+      position: absolute; top: 16px; left: 16px; z-index: 10;
+      width: 380px; display: flex; flex-direction: column; gap: 10px;
+      max-height: calc(100vh - 32px); overflow-y: auto; padding-right: 4px;
+    }
+    .hud::-webkit-scrollbar { width: 4px; }
+    .hud::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+
+    .card {
+      background: var(--panel); backdrop-filter: blur(14px);
+      border: 1px solid rgba(255,255,255,0.10); border-radius: 14px;
+      padding: 14px 16px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.7);
+    }
+    .card-title {
+      font-size: 0.75rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--accent); margin-bottom: 10px;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .shapes { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+    .shapes button {
+      flex: 1; min-width: 65px; background: #1e293b; color: var(--text);
+      border: 1px solid #334155; padding: 6px 8px;
+      border-radius: 8px; font-size: 0.78rem; cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .shapes button:hover { background: #334155; }
+    .shapes button.active { background: var(--accent); color: #0f172a; border-color: var(--accent); font-weight: 700; }
+    
+    .ctrl-row { display: flex; gap: 6px; flex-wrap: wrap; }
+    .ctrl-row button {
+      flex: 1; background: #1e293b; color: var(--text);
+      border: 1px solid #334155; padding: 7px 10px;
+      border-radius: 8px; font-size: 0.8rem; font-weight: 600;
+      cursor: pointer; transition: background 0.15s;
+    }
+    .ctrl-row button:hover { background: #334155; }
+    #btnPlay  { background: #064e3b; border-color: var(--green); color: var(--green); }
+    #btnPlay:hover  { background: #065f46; }
+    #btnPause { background: #450a0a; border-color: var(--red); color: var(--red); }
+    #btnPause:hover { background: #7f1d1d; }
+    #btnReset { background: #1e1b4b; border-color: #818cf8; color: #818cf8; }
+    #btnReset:hover { background: #312e81; }
+
+    .speed-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+    .speed-row label { font-size: 0.78rem; color: var(--dim); white-space: nowrap; }
+    input[type=range] { flex: 1; accent-color: var(--accent); }
+    #speedLabel { font-size: 0.78rem; color: var(--accent); font-weight: 700; min-width: 56px; text-align: right; }
+
+    .step-banner {
+      margin-top: 8px; background: rgba(56,189,248,0.08);
+      border: 1px solid rgba(56,189,248,0.25); border-radius: 8px;
+      padding: 6px 10px; font-size: 0.8rem; font-family: monospace;
+      display: flex; justify-content: space-between;
+    }
+    .step-banner span { color: var(--accent); font-weight: 700; }
+
+    /* ── G-Code Section ── */
+    #gcodeContainer {
+      display: flex; flex-direction: column; gap: 8px; margin-top: 8px;
+    }
+    textarea.gcode-input {
+      width: 100%; height: 110px; background: #0f172a; color: #38bdf8;
+      border: 1px solid #334155; border-radius: 8px; padding: 8px;
+      font-family: 'Consolas', 'Courier New', monospace; font-size: 0.75rem;
+      resize: vertical; outline: none;
+    }
+    textarea.gcode-input:focus { border-color: var(--accent); }
+    .gcode-actions { display: flex; gap: 6px; }
+    .gcode-actions button {
+      flex: 1; padding: 6px 10px; font-size: 0.78rem; font-weight: 600;
+      border-radius: 6px; cursor: pointer; border: 1px solid #334155;
+      background: #1e293b; color: var(--text); transition: 0.15s;
+    }
+    .gcode-actions button:hover { background: #334155; }
+    .gcode-actions #btnRunGcode { background: #0284c7; color: #fff; border-color: #38bdf8; }
+    .gcode-actions #btnRunGcode:hover { background: #0369a1; }
+
+    .axes { display: flex; flex-direction: column; gap: 10px; }
+    .axis-row { display: flex; flex-direction: column; gap: 3px; }
+    .axis-label {
+      display: flex; justify-content: space-between;
+      font-size: 0.75rem; color: var(--dim);
+    }
+    .axis-label b { font-size: 0.8rem; }
+    .axis-label .val { font-family: monospace; color: var(--text); font-weight: 700; }
+    .bar-track {
+      height: 8px; background: #1e293b; border-radius: 4px; overflow: hidden;
+      border: 1px solid #334155;
+    }
+    .bar-fill { height: 100%; border-radius: 4px; transition: width 0.12s ease; width: 0%; }
+    .bar-r   { background: linear-gradient(90deg, #0ea5e9, #38bdf8); }
+    .bar-th  { background: linear-gradient(90deg, #d97706, #f59e0b); }
+    .bar-z   { background: linear-gradient(90deg, #059669, #10b981); }
+
+    .cart-grid {
+      display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px;
+      font-family: monospace; font-size: 0.8rem; margin-top: 2px;
+    }
+    .cart-cell { background: #1e293b; border-radius: 6px; padding: 6px 8px; border: 1px solid #334155; }
+    .cart-cell .lbl { font-size: 0.65rem; color: var(--dim); text-transform: uppercase; }
+    .cart-cell .num { font-size: 0.95rem; font-weight: 700; }
+    .cx { color: #f87171; } .cy { color: #34d399; } .cz { color: #818cf8; }
+
+    .info-card {
+      position: absolute; bottom: 16px; right: 16px; z-index: 10;
+      background: var(--panel); backdrop-filter: blur(12px);
+      border: 1px solid rgba(255,255,255,0.10); border-radius: 12px;
+      padding: 10px 14px; font-size: 0.75rem; color: var(--dim); line-height: 1.6;
+    }
+    .info-card b { color: var(--text); }
+  </style>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+  <div id="canvas-container"></div>
+
+  <!-- HUD LEFT -->
+  <div class="hud">
+    <!-- Shape & G-Code selector -->
+    <div class="card">
+      <div class="card-title">
+        <span>🖨 Cosmic Polar 400 · Toolpath</span>
+      </div>
+      <div class="shapes">
+        <button id="btnStar"     onclick="selectShape('star')">⭐ Star</button>
+        <button id="btnSpiral"   onclick="selectShape('spiral')">🌀 Spiral</button>
+        <button id="btnCircle"   onclick="selectShape('circle')">⭕ Circle</button>
+        <button id="btnCylinder" onclick="selectShape('cylinder')">🧱 Cylinder</button>
+        <button id="btnHex"      onclick="selectShape('hex')">⬡ Hex</button>
+        <button id="btnGcode"    onclick="selectGcodeMode()">📄 G-Code</button>
+      </div>
+
+      <!-- Collapsible G-Code Input Area -->
+      <div id="gcodeContainer">
+        <textarea id="gcodeInput" class="gcode-input" placeholder="Paste your G-code commands here (G0, G1 X... Y... Z... E...)"></textarea>
+        <div class="gcode-actions">
+          <button id="btnRunGcode" onclick="runCustomGcode()">▶ Execute G-Code</button>
+          <button onclick="loadSampleGcode('heart')">💖 Heart</button>
+          <button onclick="loadSampleGcode('square')">⬛ Square</button>
+        </div>
+      </div>
+
+      <div class="ctrl-row" style="margin-top: 10px;">
+        <button id="btnPlay"  onclick="play()">▶ Play</button>
+        <button id="btnPause" onclick="pause()">⏸ Pause</button>
+        <button id="btnPrev"  onclick="stepPrev()">◀ Step</button>
+        <button id="btnNext"  onclick="stepNext()">Step ▶</button>
+        <button id="btnReset" onclick="reset()">↺ Reset</button>
+      </div>
+      <div class="speed-row">
+        <label>Speed</label>
+        <input type="range" min="0.05" max="3" step="0.05" value="0.30"
+               oninput="setSpeed(this.value)">
+        <span id="speedLabel">0.30×</span>
+      </div>
+      <div class="step-banner">
+        <span>Step <span id="stepNum">—</span></span>
+        <span>Path <span id="pathDist">—</span></span>
+      </div>
+    </div>
+
+    <!-- Axis bars -->
+    <div class="card">
+      <div class="card-title">⚙ Axis State</div>
+      <div class="axes">
+        <div class="axis-row">
+          <div class="axis-label">
+            <b>R — Bed Rotation</b>
+            <span class="val" id="valR">—</span>
+          </div>
+          <div class="bar-track"><div class="bar-fill bar-r" id="barR"></div></div>
+        </div>
+        <div class="axis-row">
+          <div class="axis-label">
+            <b>θ — Arm Servo Angle</b>
+            <span class="val" id="valTheta">—</span>
+          </div>
+          <div class="bar-track"><div class="bar-fill bar-th" id="barTheta"></div></div>
+        </div>
+        <div class="axis-row">
+          <div class="axis-label">
+            <b>Z — Height</b>
+            <span class="val" id="valZ">—</span>
+          </div>
+          <div class="bar-track"><div class="bar-fill bar-z" id="barZ"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cartesian readout -->
+    <div class="card">
+      <div class="card-title">📍 Target Position (Bed-Local)</div>
+      <div class="cart-grid">
+        <div class="cart-cell"><div class="lbl">X (mm)</div><div class="num cx" id="cX">—</div></div>
+        <div class="cart-cell"><div class="lbl">Y (mm)</div><div class="num cy" id="cY">—</div></div>
+        <div class="cart-cell"><div class="lbl">Z (mm)</div><div class="num cz" id="cZ">—</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Info bottom-right -->
+  <div class="info-card">
+    <b>Swinging-Arm Polar Kinematics</b><br>
+    Supports Direct G-Code Upload & Parsing<br>
+    Nozzle fixed at arm tip · Bed rotates<br>
+    <b>Drag</b> to orbit · <b>Scroll</b> to zoom
+  </div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+//  MACHINE CONSTANTS
+// ═══════════════════════════════════════════════════════
+const BED_R        = 200.0;   // mm (bed radius & arm boom length)
+const BED_D        = 401.0;   // mm
+const PULLEY_D     = 19.0;    // mm
+const CNTS_PER_REV = 4096.0;
+const Z_CNTS_MM    = 100.0;
+const MAX_Z_MM     = 100.0;
+
+// ═══════════════════════════════════════════════════════
+//  THREE.JS SCENE
+// ═══════════════════════════════════════════════════════
+const container = document.getElementById('canvas-container');
+const scene     = new THREE.Scene();
+scene.background = new THREE.Color(0x090d16);
+scene.fog = new THREE.Fog(0x090d16, 700, 2000);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 1, 3000);
+camera.position.set(80, 380, 520);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(devicePixelRatio);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+container.appendChild(renderer.domElement);
+
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 50, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.update();
+
+// ── Lighting ──
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const sun = new THREE.DirectionalLight(0xffffff, 0.9);
+sun.position.set(200, 500, 300);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+scene.add(sun);
+const fill = new THREE.DirectionalLight(0x38bdf8, 0.4);
+fill.position.set(-200, 200, -200);
+scene.add(fill);
+
+// Point light tracking the fixed nozzle tip
+const nozzleGlow = new THREE.PointLight(0xff6600, 3.0, 140);
+scene.add(nozzleGlow);
+
+// ── Ground Grid ──
+const grid = new THREE.GridHelper(1200, 48, 0x1e293b, 0x111827);
+grid.position.y = -3;
+scene.add(grid);
+
+// ═══════════════════════════════════════════════════════
+//  BUILD BED — ROTATES around central Y axis (0,0)
+// ═══════════════════════════════════════════════════════
+const bedGroup = new THREE.Group();
+scene.add(bedGroup);
+
+// Bed disc
+const bedMesh = new THREE.Mesh(
+  new THREE.CylinderGeometry(BED_R, BED_R, 7, 80),
+  new THREE.MeshStandardMaterial({ color: 0x1e293b, metalness: 0.85, roughness: 0.15 })
+);
+bedMesh.position.y = -3.5;
+bedMesh.receiveShadow = true;
+bedGroup.add(bedMesh);
+
+// Concentric reference rings
+[50, 100, 150, 200].forEach(r => {
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(r, 0.9, 8, 80),
+    new THREE.MeshBasicMaterial({ color: r === 200 ? 0x0284c7 : 0x334155 })
+  );
+  ring.rotation.x = Math.PI / 2;
+  bedGroup.add(ring);
+});
+
+// Radial spokes
+for (let i = 0; i < 8; i++) {
+  const a = (i / 8) * Math.PI * 2;
+  const spoke = new THREE.Mesh(
+    new THREE.BoxGeometry(BED_R * 2 - 4, 0.8, 1.4),
+    new THREE.MeshBasicMaterial({ color: i === 0 ? 0x38bdf8 : 0x334155 })
+  );
+  spoke.rotation.y = a;
+  spoke.position.y = 0.2;
+  bedGroup.add(spoke);
+}
+
+// Bed center dot
+const cdot = new THREE.Mesh(
+  new THREE.CylinderGeometry(6, 6, 3, 24),
+  new THREE.MeshBasicMaterial({ color: 0xf43f5e })
+);
+cdot.position.y = 1;
+bedGroup.add(cdot);
+
+// Print trace container (rotates with bed)
+const bedTraceGroup = new THREE.Group();
+bedGroup.add(bedTraceGroup);
+
+// ═══════════════════════════════════════════════════════
+//  FIXED FRAME — vertical pillar at X = -BED_R
+// ═══════════════════════════════════════════════════════
+const pillarX = -BED_R;  // -200 mm in world space
+
+// Uprights
+[0, 28].forEach(zOff => {
+  const up = new THREE.Mesh(
+    new THREE.BoxGeometry(18, 480, 18),
+    new THREE.MeshStandardMaterial({ color: 0x334155, metalness: 0.9 })
+  );
+  up.position.set(pillarX - 20, 240, zOff - 14);
+  up.castShadow = true;
+  scene.add(up);
+});
+
+// Cross braces
+[60, 160, 300, 430].forEach(y => {
+  const brace = new THREE.Mesh(
+    new THREE.BoxGeometry(18, 14, 60),
+    new THREE.MeshStandardMaterial({ color: 0x475569, metalness: 0.8 })
+  );
+  brace.position.set(pillarX - 20, y, 0);
+  scene.add(brace);
+});
+
+// Lead screw rod
+const screwMesh = new THREE.Mesh(
+  new THREE.CylinderGeometry(4, 4, 480, 20),
+  new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.95, roughness: 0.05 })
+);
+screwMesh.position.set(pillarX - 6, 240, 0);
+scene.add(screwMesh);
+
+// ═══════════════════════════════════════════════════════
+//  Z-CARRIAGE — slides up/down along pillar
+// ═══════════════════════════════════════════════════════
+const zCarriage = new THREE.Group();
+scene.add(zCarriage);
+
+const carriageBody = new THREE.Mesh(
+  new THREE.BoxGeometry(52, 36, 52),
+  new THREE.MeshStandardMaterial({ color: 0x0284c7, metalness: 0.6 })
+);
+carriageBody.castShadow = true;
+zCarriage.add(carriageBody);
+
+const servoHousing = new THREE.Mesh(
+  new THREE.BoxGeometry(32, 26, 36),
+  new THREE.MeshStandardMaterial({ color: 0x0f172a, metalness: 0.5 })
+);
+servoHousing.position.set(22, 0, 0);
+zCarriage.add(servoHousing);
+
+// ═══════════════════════════════════════════════════════
+//  SWINGING ARM BOOM (Pivots at pillarX, length = BED_R)
+// ═══════════════════════════════════════════════════════
+const armGroup = new THREE.Group();
+scene.add(armGroup);
+
+// Rigid Arm Bar
+const armBar = new THREE.Mesh(
+  (() => {
+    const g = new THREE.BoxGeometry(BED_R, 12, 14);
+    g.translate(BED_R / 2, 0, 0);
+    return g;
+  })(),
+  new THREE.MeshStandardMaterial({ color: 0x38bdf8, metalness: 0.7, roughness: 0.25 })
+);
+armBar.castShadow = true;
+armGroup.add(armBar);
+
+// ── FIXED NOZZLE ASSEMBLY (Permanently attached at arm tip, X = BED_R) ──
+const nozzleCarrier = new THREE.Group();
+nozzleCarrier.position.set(BED_R, 0, 0);
+armGroup.add(nozzleCarrier);
+
+// Heavy hotend block at arm tip
+const carriageSled = new THREE.Mesh(
+  new THREE.BoxGeometry(28, 20, 28),
+  new THREE.MeshStandardMaterial({ color: 0xff6600, metalness: 0.3, roughness: 0.4, emissive: 0x331100 })
+);
+carriageSled.position.y = 4;
+carriageSled.castShadow = true;
+nozzleCarrier.add(carriageSled);
+
+// Hotend block
+const hotendBlock = new THREE.Mesh(
+  new THREE.BoxGeometry(18, 24, 18),
+  new THREE.MeshStandardMaterial({ color: 0xf59e0b, metalness: 0.7 })
+);
+hotendBlock.position.y = -18;
+nozzleCarrier.add(hotendBlock);
+
+// Heater barrel
+const barrel = new THREE.Mesh(
+  new THREE.CylinderGeometry(5, 5, 18, 16),
+  new THREE.MeshStandardMaterial({ color: 0x78716c, metalness: 0.9 })
+);
+barrel.position.y = -34;
+nozzleCarrier.add(barrel);
+
+// Nozzle cone tip (points DOWN)
+const nozzleCone = new THREE.Mesh(
+  new THREE.ConeGeometry(4, 10, 16),
+  new THREE.MeshBasicMaterial({ color: 0xff2200 })
+);
+nozzleCone.rotation.x = Math.PI;
+nozzleCone.position.y = -46;
+nozzleCarrier.add(nozzleCone);
+
+// ═══════════════════════════════════════════════════════
+//  G-CODE PARSER & TOOLPATH GENERATOR
+// ═══════════════════════════════════════════════════════
+function interpPath(pts, segMm = 3) {
+  const out = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i], b = pts[i + 1];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const dist = Math.sqrt(dx * dx + dy * dy) || 0.001;
+    const n = Math.max(1, Math.ceil(dist / segMm));
+    for (let j = 0; j < n; j++) {
+      const t = j / n;
+      out.push({ x: a.x + dx * t, y: a.y + dy * t, z: a.z + (b.z - a.z) * t });
+    }
+  }
+  out.push(pts[pts.length - 1]);
+  return out;
+}
+
+function circleArcCoordinates(center, radius, startPoint, endPoint, isCw, n = 30) {
+  const [cx, cy] = center;
+  const [x1, y1] = startPoint;
+  const [x2, y2] = endPoint;
+
+  let startAngle = Math.atan2(y1 - cy, x1 - cx);
+  let endAngle   = Math.atan2(y2 - cy, x2 - cx);
+
+  if (isCw) {
+    if (endAngle > startAngle) endAngle -= 2 * Math.PI;
+  } else {
+    if (endAngle < startAngle) endAngle += 2 * Math.PI;
+  }
+
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const t = startAngle + (i / n) * (endAngle - startAngle);
+    const x = cx + radius * Math.cos(t);
+    const y = cy + radius * Math.sin(t);
+    pts.push({ x, y });
+  }
+  return pts;
+}
+
+function parseGcode(gcodeText) {
+  const lines = gcodeText.split('\n');
+  let curX = 0, curY = 0, curZ = 5, curE = 0;
+  let absolutePos = true;
+  let absoluteExt = true;
+  const rawPts = [{ x: 0, y: 0, z: 5 }]; // Start at bed center
+
+  for (let rawLine of lines) {
+    let line = rawLine.split(';')[0].trim(); // strip comments
+    if (!line) continue;
+
+    const tokens = line.split(/\s+/);
+    const cmd = tokens[0].toUpperCase();
+
+    if (cmd === 'G90') { absolutePos = true; continue; }
+    if (cmd === 'G91') { absolutePos = false; continue; }
+    if (cmd === 'M82') { absoluteExt = true; continue; }
+    if (cmd === 'M83') { absoluteExt = false; continue; }
+
+    if (cmd === 'G28') {
+      curX = 0; curY = 0; curZ = 5;
+      rawPts.push({ x: 0, y: 0, z: 5 });
+      continue;
+    }
+
+    if (cmd === 'G0' || cmd === 'G1') {
+      let x = curX, y = curY, z = curZ, e = curE;
+      let hasX = false, hasY = false, hasZ = false;
+
+      for (let i = 1; i < tokens.length; i++) {
+        const t = tokens[i];
+        if (!t) continue;
+        const code = t[0].toUpperCase();
+        const val = parseFloat(t.slice(1));
+        if (isNaN(val)) continue;
+
+        if (code === 'X') { x = absolutePos ? val : curX + val; hasX = true; }
+        if (code === 'Y') { y = absolutePos ? val : curY + val; hasY = true; }
+        if (code === 'Z') { z = absolutePos ? val : curZ + val; hasZ = true; }
+        if (code === 'E') { e = absoluteExt ? val : curE + val; }
+      }
+
+      curX = x; curY = y; curZ = z; curE = e;
+
+      if (hasX || hasY || hasZ) {
+        rawPts.push({ x, y, z });
+      }
+    } else if (cmd === 'G02' || cmd === 'G03' || cmd === 'G2' || cmd === 'G3') {
+      const isCw = (cmd === 'G02' || cmd === 'G2');
+      let targetX = curX, targetY = curY, iVal = 0, jVal = 0;
+
+      for (let i = 1; i < tokens.length; i++) {
+        const t = tokens[i];
+        if (!t) continue;
+        const code = t[0].toUpperCase();
+        const val = parseFloat(t.slice(1));
+        if (isNaN(val)) continue;
+
+        if (code === 'X') targetX = val;
+        if (code === 'Y') targetY = val;
+        if (code === 'I') iVal = val;
+        if (code === 'J') jVal = val;
+      }
+
+      const center = [curX + iVal, curY + jVal];
+      const radius = Math.hypot(iVal, jVal);
+
+      if (radius > 0) {
+        const arcPts = circleArcCoordinates(center, radius, [curX, curY], [targetX, targetY], isCw, 30);
+        for (let p of arcPts) {
+          rawPts.push({ x: p.x, y: p.y, z: curZ });
+        }
+        curX = targetX;
+        curY = targetY;
+      }
+    } else if (cmd === 'G92') {
+      curE = 0;
+    }
+  }
+
+  if (rawPts.length <= 1) return [];
+
+  // Auto-center G-code if coordinates are positive offset (e.g. 0..200 bed origin)
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (let p of rawPts) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+
+  const centerX = (minX >= 0 && maxX > 40) ? (minX + maxX) / 2 : 0;
+  const centerY = (minY >= 0 && maxY > 40) ? (minY + maxY) / 2 : 0;
+
+  const centeredPts = rawPts.map(p => ({
+    x: p.x - centerX,
+    y: p.y - centerY,
+    z: Math.max(1, p.z)
+  }));
+
+  return interpPath(centeredPts, 3);
+}
+
+function generateToolpath(type) {
+  if (type === 'star') {
+    const outer = 140, inner = 60, tips = 5, z = 5;
+    const raw = [{ x: 0, y: 0, z }];
+    for (let i = 0; i <= tips * 2; i++) {
+      const a = (i / (tips * 2)) * Math.PI * 2 - Math.PI / 2;
+      const r = i % 2 === 0 ? outer : inner;
+      raw.push({ x: r * Math.cos(a), y: r * Math.sin(a), z });
+    }
+    return interpPath(raw);
+  }
+  if (type === 'spiral') {
+    const raw = [];
+    for (let i = 0; i <= 720; i++) {
+      const a = (i / 720) * Math.PI * 4;
+      const r = (i / 720) * BED_R * 0.88;
+      const z = (i / 720) * 30 + 2;
+      raw.push({ x: r * Math.cos(a), y: r * Math.sin(a), z });
+    }
+    return raw;
+  }
+  if (type === 'circle') {
+    const raw = [{ x: 0, y: 0, z: 5 }];
+    for (let i = 0; i <= 360; i++) {
+      const a = (i / 360) * Math.PI * 2;
+      raw.push({ x: 120 * Math.cos(a), y: 120 * Math.sin(a), z: 5 });
+    }
+    return interpPath(raw);
+  }
+  if (type === 'cylinder') {
+    const raw = [{ x: 0, y: 0, z: 2 }];
+    for (let layer = 0; layer < 8; layer++) {
+      for (let i = 0; i <= 360; i++) {
+        const a = (i / 360) * Math.PI * 2 + layer * 0.1;
+        raw.push({ x: 100 * Math.cos(a), y: 100 * Math.sin(a), z: layer * 4 + 2 });
+      }
+    }
+    return interpPath(raw);
+  }
+  if (type === 'hex') {
+    const raw = [{ x: 0, y: 0, z: 5 }];
+    const r = 130, sides = 6, z = 5;
+    for (let i = 0; i <= sides; i++) {
+      const a = (i / sides) * Math.PI * 2 - Math.PI / 6;
+      raw.push({ x: r * Math.cos(a), y: r * Math.sin(a), z });
+    }
+    return interpPath(raw);
+  }
+  return [];
+}
+
+// ═══════════════════════════════════════════════════════
+//  INVERSE KINEMATICS ENGINE
+// ═══════════════════════════════════════════════════════
+let lastBedDeg = 0, accumBedDeg = 0;
+function resetIK() { lastBedDeg = 0; accumBedDeg = 0; }
+
+function ik(x, y, z) {
+  const r = Math.min(BED_R, Math.sqrt(x * x + y * y));
+
+  // 1. Arm swing angle (0° at center r=0, 60° at bed edge r=200)
+  const armSwingRad = r === 0 ? 0 : 2 * Math.asin(r / (2 * BED_R));
+  const armSwingDeg = armSwingRad * 180 / Math.PI;
+
+  // 2. World position of nozzle tip on 3D arm
+  const wx = pillarX + BED_R * Math.cos(armSwingRad);
+  const wz = -BED_R * Math.sin(armSwingRad);
+
+  // 3. World angle of nozzle vs bed target angle
+  const thTargetRad      = Math.atan2(y, x);
+  const thNozzleWorldRad = Math.atan2(wz, wx);
+  let targetBedDeg     = (thTargetRad - thNozzleWorldRad) * 180 / Math.PI;
+
+  // 4. Multi-turn continuous bed rotation tracking
+  let delta = targetBedDeg - lastBedDeg;
+  while (delta >  180) delta -= 360;
+  while (delta < -180) delta += 360;
+  accumBedDeg += delta;
+  lastBedDeg = targetBedDeg;
+
+  const rRevs  = (accumBedDeg / 360) * (BED_D / PULLEY_D);
+  const rCnts  = Math.round(rRevs * CNTS_PER_REV);
+  const servo  = Math.round((armSwingDeg / 60) * 180);
+  const zCnts  = Math.round(z * Z_CNTS_MM);
+
+  return { r, rawDeg: targetBedDeg, accumBedDeg, rCnts, armSwingDeg, servo, zCnts };
+}
+
+function precomputeIK(toolpath) {
+  resetIK();
+  return toolpath.map(p => ({ p, ik: ik(p.x, p.y, p.z) }));
+}
+
+// ═══════════════════════════════════════════════════════
+//  PLAYBACK STATE
+// ═══════════════════════════════════════════════════════
+let steps      = [];
+let stepIdx    = 0;
+let playing    = false;
+let speedMult  = 0.30;
+
+// Smooth display state
+let dispBedDeg = 0;   // bed rotation angle (deg)
+let dispArmDeg = 0;   // arm swing angle (deg)
+let dispZ      = 0;   // Z height (mm)
+
+// Targets
+let tgtBedDeg = 0;
+let tgtArmDeg = 0;
+let tgtZ      = 0;
+
+const LERP_SPEED = 6.5;
+
+let lastStepTime   = 0;
+let stepIntervalMs = 500;
+
+// ═══════════════════════════════════════════════════════
+//  RENDER STEP — set targets + update HUD
+// ═══════════════════════════════════════════════════════
+function renderStep(idx) {
+  if (idx < 0 || idx >= steps.length) return;
+  stepIdx = idx;
+  const { p, ik: k } = steps[idx];
+
+  tgtArmDeg = k.armSwingDeg;
+  tgtBedDeg = k.accumBedDeg;
+  tgtZ      = p.z;
+
+  // ── HUD ──
+  document.getElementById('stepNum').textContent   = `${idx + 1} / ${steps.length}`;
+  document.getElementById('cX').textContent        = p.x.toFixed(1);
+  document.getElementById('cY').textContent        = p.y.toFixed(1);
+  document.getElementById('cZ').textContent        = p.z.toFixed(1);
+
+  const rPct  = Math.abs(k.accumBedDeg) / 720 * 100;
+  const thPct = k.servo / 180 * 100;
+  const zPct  = p.z / MAX_Z_MM * 100;
+
+  document.getElementById('barR').style.width     = `${Math.min(100, rPct)}%`;
+  document.getElementById('barTheta').style.width = `${Math.min(100, thPct)}%`;
+  document.getElementById('barZ').style.width     = `${Math.min(100, zPct)}%`;
+
+  document.getElementById('valR').textContent     = `${k.accumBedDeg.toFixed(1)}°  (${k.rCnts} cts)`;
+  document.getElementById('valTheta').textContent = `${k.servo}°  (swing ${k.armSwingDeg.toFixed(1)}°)`;
+  document.getElementById('valZ').textContent     = `${p.z.toFixed(1)} mm  (${k.zCnts} cts)`;
+}
+
+// ═══════════════════════════════════════════════════════
+//  3D UPDATE — called every frame
+// ═══════════════════════════════════════════════════════
+const Z_BASE = 50;
+
+function updateScene(dt) {
+  const alpha = Math.min(1, LERP_SPEED * dt);
+
+  dispBedDeg += (tgtBedDeg - dispBedDeg) * alpha;
+  dispArmDeg += (tgtArmDeg - dispArmDeg) * alpha;
+  dispZ      += (tgtZ      - dispZ)      * alpha;
+
+  const height = Z_BASE + dispZ;
+
+  // ── 1. BED ROTATES ──
+  bedGroup.rotation.y = dispBedDeg * Math.PI / 180;
+
+  // ── 2. Z-CARRIAGE MOVES UP/DOWN ──
+  zCarriage.position.set(pillarX - 20, height, 0);
+
+  // ── 3. ARM SWINGS IN AN ARC AROUND PILLAR ──
+  armGroup.position.set(pillarX, height, 0);
+  armGroup.rotation.y = dispArmDeg * Math.PI / 180;
+
+  // ── 4. NOZZLE GLOW follows arm tip world position ──
+  const armRad = dispArmDeg * Math.PI / 180;
+  const tipWx = pillarX + BED_R * Math.cos(armRad);
+  const tipWz = -BED_R * Math.sin(armRad);
+  nozzleGlow.position.set(tipWx, height - 46, tipWz);
+}
+
+// ═══════════════════════════════════════════════════════
+//  PRINT TRACE
+// ═══════════════════════════════════════════════════════
+function rebuildTrace() {
+  while (bedTraceGroup.children.length) bedTraceGroup.remove(bedTraceGroup.children[0]);
+  if (stepIdx < 1) return;
+
+  const pts = [];
+  for (let i = 0; i <= stepIdx && i < steps.length; i++) {
+    const { p } = steps[i];
+    pts.push(new THREE.Vector3(p.x, Math.max(1, p.z) + 2, p.y));
+  }
+  if (pts.length < 2) return;
+
+  const geom = new THREE.BufferGeometry().setFromPoints(pts);
+  const mat  = new THREE.LineBasicMaterial({ color: 0xf59e0b, linewidth: 4 });
+  bedTraceGroup.add(new THREE.Line(geom, mat));
+}
+
+// ═══════════════════════════════════════════════════════
+//  PLAYBACK & G-CODE CONTROLS
+// ═══════════════════════════════════════════════════════
+function selectShape(type) {
+  document.querySelectorAll('.shapes button').forEach(b => b.classList.remove('active'));
+  const key = 'btn' + type[0].toUpperCase() + type.slice(1);
+  const btn = document.getElementById(key);
+  if (btn) btn.classList.add('active');
+
+  reset(false);
+
+  const raw = generateToolpath(type);
+  steps = precomputeIK(raw);
+
+  let d = 0;
+  for (let i = 1; i < raw.length; i++) {
+    const dx = raw[i].x - raw[i-1].x, dy = raw[i].y - raw[i-1].y;
+    d += Math.sqrt(dx*dx + dy*dy);
+  }
+  document.getElementById('pathDist').textContent = `${d.toFixed(0)} mm`;
+
+  renderStep(0);
+
+  if (steps.length > 0) {
+    dispArmDeg = tgtArmDeg;
+    dispBedDeg = tgtBedDeg;
+    dispZ      = tgtZ;
+
+    bedGroup.rotation.y = dispBedDeg * Math.PI / 180;
+    armGroup.position.set(pillarX, Z_BASE + dispZ, 0);
+    armGroup.rotation.y = dispArmDeg * Math.PI / 180;
+    zCarriage.position.set(pillarX - 20, Z_BASE + dispZ, 0);
+  }
+}
+
+function selectGcodeMode() {
+  document.querySelectorAll('.shapes button').forEach(b => b.classList.remove('active'));
+  document.getElementById('btnGcode').classList.add('active');
+  const input = document.getElementById('gcodeInput');
+  if (!input.value.trim()) {
+    loadSampleGcode('heart');
+  } else {
+    runCustomGcode();
+  }
+}
+
+function runCustomGcode() {
+  const gcodeText = document.getElementById('gcodeInput').value;
+  const toolpath = parseGcode(gcodeText);
+  if (!toolpath || toolpath.length === 0) {
+    alert("No valid G0/G1 linear moves found in G-code!");
+    return;
+  }
+
+  reset(false);
+  steps = precomputeIK(toolpath);
+
+  let d = 0;
+  for (let i = 1; i < toolpath.length; i++) {
+    const dx = toolpath[i].x - toolpath[i-1].x, dy = toolpath[i].y - toolpath[i-1].y;
+    d += Math.sqrt(dx*dx + dy*dy);
+  }
+  document.getElementById('pathDist').textContent = `${d.toFixed(0)} mm (G-Code)`;
+
+  renderStep(0);
+
+  if (steps.length > 0) {
+    dispArmDeg = tgtArmDeg;
+    dispBedDeg = tgtBedDeg;
+    dispZ      = tgtZ;
+
+    bedGroup.rotation.y = dispBedDeg * Math.PI / 180;
+    armGroup.position.set(pillarX, Z_BASE + dispZ, 0);
+    armGroup.rotation.y = dispArmDeg * Math.PI / 180;
+    zCarriage.position.set(pillarX - 20, Z_BASE + dispZ, 0);
+  }
+}
+
+function loadSampleGcode(type) {
+  let gcode = "; Sample G-Code\nG90 ; Absolute positioning\nM83 ; Relative extrusion\n";
+  if (type === 'heart') {
+    gcode += "; 2D Heart Outline\nG0 X0 Y0 Z5\n";
+    for (let t = 0; t <= Math.PI * 2; t += 0.1) {
+      const x = (16 * Math.pow(Math.sin(t), 3)) * 6;
+      const y = (13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t)) * 6;
+      gcode += `G1 X${x.toFixed(2)} Y${y.toFixed(2)} Z5 E0.5\n`;
+    }
+  } else if (type === 'square') {
+    gcode += "; 100x100 Square\nG0 X0 Y0 Z5\n";
+    gcode += "G1 X-50 Y-50 Z5 E1.0\n";
+    gcode += "G1 X50 Y-50 Z5 E1.0\n";
+    gcode += "G1 X50 Y50 Z5 E1.0\n";
+    gcode += "G1 X-50 Y50 Z5 E1.0\n";
+    gcode += "G1 X-50 Y-50 Z5 E1.0\n";
+  }
+
+  document.getElementById('gcodeInput').value = gcode;
+  runCustomGcode();
+}
+
+function play()  { if (playing || steps.length === 0) return; playing = true; lastStepTime = performance.now(); }
+function pause() { playing = false; }
+
+function stepNext() {
+  pause();
+  if (stepIdx < steps.length - 1) { renderStep(stepIdx + 1); rebuildTrace(); }
+}
+function stepPrev() {
+  pause();
+  if (stepIdx > 0) { renderStep(stepIdx - 1); rebuildTrace(); }
+}
+
+function reset(full = true) {
+  pause();
+  stepIdx = 0;
+  dispBedDeg = 0; dispArmDeg = 0; dispZ = 0;
+  tgtBedDeg  = 0; tgtArmDeg  = 0; tgtZ  = 0;
+  lastBedDeg = 0; accumBedDeg = 0;
+
+  // Arm at 0° swing = nozzle hovering at bed center (0,0)
+  bedGroup.rotation.y = 0;
+  armGroup.position.set(pillarX, Z_BASE, 0);
+  armGroup.rotation.y = 0;
+  zCarriage.position.set(pillarX - 20, Z_BASE, 0);
+
+  while (bedTraceGroup.children.length) bedTraceGroup.remove(bedTraceGroup.children[0]);
+  if (full && steps.length > 0) renderStep(0);
+}
+
+function setSpeed(v) {
+  speedMult = parseFloat(v);
+  stepIntervalMs = Math.round(200 / speedMult);
+  document.getElementById('speedLabel').textContent = speedMult.toFixed(2) + '×';
+}
+setSpeed(0.30);
+
+// ═══════════════════════════════════════════════════════
+//  MAIN ANIMATION LOOP
+// ═══════════════════════════════════════════════════════
+let prevTime = performance.now();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const now = performance.now();
+  const dt  = Math.min((now - prevTime) / 1000, 0.05);
+  prevTime  = now;
+
+  controls.update();
+
+  if (playing && steps.length > 0) {
+    if (now - lastStepTime >= stepIntervalMs) {
+      lastStepTime = now;
+      if (stepIdx < steps.length - 1) {
+        renderStep(stepIdx + 1);
+        rebuildTrace();
+      } else {
+        pause();
+      }
+    }
+  }
+
+  updateScene(dt);
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ── Kick off with Star ──
+selectShape('star');
+</script>
+</body>
+</html>
