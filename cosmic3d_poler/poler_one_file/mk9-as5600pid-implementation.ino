@@ -94,8 +94,6 @@ volatile float bedSetpoint = BED_SETPOINT;
 
 // --- WiFi & MQTT ---
 const char *MQTT_BROKER = "test.mosquitto.org";
-const char *MQTT_USER = "";
-const char *MQTT_PASSWORD = "";
 
 #define TOPIC_START_file_start_stop "file_transfer/start"
 #define TOPIC_STOP "file_transfer/data"
@@ -949,7 +947,6 @@ void mk9Setup() {
 
   initAS5600();
 
-  mqttClient.setUsernamePassword(MQTT_USER, MQTT_PASSWORD);
   if (WiFi.status() == WL_CONNECTED) {
     if (mqttClient.connect(MQTT_BROKER, 1883)) {
       Serial.println("[MQTT] Initial connection successful ✅");

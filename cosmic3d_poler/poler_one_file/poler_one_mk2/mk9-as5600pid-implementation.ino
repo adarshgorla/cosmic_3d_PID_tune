@@ -55,7 +55,7 @@ const float MANUAL_JOG_MM = 10.0f;
 #define THETA_SERVO_PIN 40
 #define Z_LIMIT_PIN 38 // Vertical Z limit switch
 
-Servo servoTheta;
+Servo myservo;
 int currentServoAngle = SERVO_MIN_ANGLE_DEG;
 
 /*
@@ -113,9 +113,7 @@ volatile float hotendSetpoint = SETPOINT;
 volatile float bedSetpoint = BED_SETPOINT;
 
 // --- WiFi & MQTT ---
-const char *MQTT_BROKER = "test.mosquitto.org";
-const char *MQTT_USER = "";
-const char *MQTT_PASSWORD = "";
+const char *MQTT_BROKER = "broker.emqx.io";
 
 #define TOPIC_START_file_start_stop "file_transfer/start"
 #define TOPIC_STOP "file_transfer/data"
@@ -918,9 +916,10 @@ void checkAllEncoders() {
 // MQTT RECONNECT
 // =============================================================================
 void mqttReconnect() {
-  Serial.print("[MQTT] Reconnecting... ");
+  Serial.print("[MQTT] Reconnecting to ");
+  Serial.println(MQTT_BROKER);
   if (mqttClient.connect(MQTT_BROKER, 1883)) {
-    Serial.println("connected ✅");
+    Serial.println("[MQTT] Connected ✅");
     mqttClient.subscribe(TOPIC_START_file_start_stop);
     mqttClient.subscribe(TOPIC_STOP);
     mqttClient.subscribe(TOPIC_xyz_move);
@@ -1101,7 +1100,11 @@ void mk9Setup() {
   Serial.println("[SETUP] Attaching MG945 Theta Servo...");
   // Allocate Timer 3 only to avoid colliding with analogWrite LEDC timers
   // (Timer 0)
+  ESP32PWM::allocateTimer(0);
+  ESP32PWM::allocateTimer(1);
+  ESP32PWM::allocateTimer(2);
   ESP32PWM::allocateTimer(3);
+
   servoTheta.setPeriodHertz(50);
   servoTheta.attach(THETA_SERVO_PIN, 500, 2400);
   setThetaServoAngle(SERVO_MIN_ANGLE_DEG);
@@ -1118,17 +1121,35 @@ void mk9Setup() {
   Serial.println("[SETUP] Initializing AS5600 Encoders...");
   initAS5600();
 
-  mqttClient.setUsernamePassword(MQTT_USER, MQTT_PASSWORD);
+  mqttClient.setId("cosmic3d-mk9-as5600");
   mqttClient.setConnectionTimeout(2000);
+
+  mqttClient.onMessage([](int messageSize) {
+    topicBuffer = mqttClient.messageTopic();
+    payloadBuffer = "";
+    while (mqttClient.available())
+      payloadBuffer += (char)mqttClient.read();
+    messageReceived = true;
+    Serial.printf("[MQTT] ← %s  (%d bytes)\n", topicBuffer.c_str(),
+                  (int)payloadBuffer.length());
+  });
+
   if (WiFi.status() == WL_CONNECTED) {
-    if (mqttClient.connect(MQTT_BROKER, 1883)) {
-      Serial.println("[MQTT] Initial connection successful ✅");
+    Serial.print("[MQTT] Connecting to ");
+    Serial.println(MQTT_BROKER);
+    if (!mqttClient.connect(MQTT_BROKER, 1883)) {
+      Serial.print("[MQTT] Failed, error=");
+      Serial.println(mqttClient.connectError());
+    } else {
+      Serial.println("[MQTT] Connected ✅");
       mqttClient.subscribe(TOPIC_START_file_start_stop);
       mqttClient.subscribe(TOPIC_STOP);
       mqttClient.subscribe(TOPIC_xyz_move);
       mqttClient.subscribe(MOTOR_START);
       mqttClient.subscribe(MOTOR_STOP);
     }
+  } else {
+    Serial.println("[MQTT] WiFi unavailable during init, deferred.");
   }
 
   Serial.println("[SETUP] Cosmic Polar 400 Core Ready.");
