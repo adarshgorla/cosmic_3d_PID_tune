@@ -817,6 +817,23 @@ void updateEncoderFromAS5600(int motorIndex) {
 // AS5600 INIT
 // =============================================================================
 void initAS5600() {
+  // Perform I2C bus clock recovery in case SDA is stuck LOW by an un-reset
+  // slave
+  pinMode(I2C_SDA, INPUT_PULLUP);
+  pinMode(I2C_SCL, INPUT_PULLUP);
+  if (digitalRead(I2C_SDA) == LOW) {
+    Serial.println("[I2C] SDA pin stuck LOW. Attempting bus clock recovery...");
+    pinMode(I2C_SCL, OUTPUT);
+    for (int i = 0; i < 9; i++) {
+      digitalWrite(I2C_SCL, LOW);
+      delayMicroseconds(5);
+      digitalWrite(I2C_SCL, HIGH);
+      delayMicroseconds(5);
+    }
+    pinMode(I2C_SDA, INPUT_PULLUP);
+    pinMode(I2C_SCL, INPUT_PULLUP);
+  }
+
   Wire.begin(I2C_SDA, I2C_SCL);
   Wire.setClock(400000);
   Wire.setTimeOut(I2C_TIMEOUT_MS);
@@ -1097,29 +1114,32 @@ void mk9Setup() {
   Serial.println("[SETUP] Limit switch and heaters initialized.");
 
   // Initialize MG945 Servo for Theta Axis
-  Serial.println("[SETUP] Attaching MG945 Theta Servo...");
-  // Allocate Timer 3 only to avoid colliding with analogWrite LEDC timers
-  // (Timer 0)
-  ESP32PWM::allocateTimer(0);
-  ESP32PWM::allocateTimer(1);
-  ESP32PWM::allocateTimer(2);
-  ESP32PWM::allocateTimer(3);
-
+  Serial.println("[SETUP 1/5] Attaching MG945 Theta Servo...");
+  Serial.println("[SERVO] Setting period to 50Hz...");
   servoTheta.setPeriodHertz(50);
+  Serial.println("[SERVO] Attaching pin to ESP32Servo...");
   servoTheta.attach(THETA_SERVO_PIN, 500, 2400);
+  Serial.println("[SERVO] Setting initial angle...");
   setThetaServoAngle(SERVO_MIN_ANGLE_DEG);
-  Serial.printf("[SERVO] MG945 Theta Servo attached to GPIO %d (Min: %d deg)\n",
-                THETA_SERVO_PIN, SERVO_MIN_ANGLE_DEG);
+  Serial.printf(
+      "[SERVO] MG945 Theta Servo attached to GPIO %d (Min: %d deg) ✅\n",
+      THETA_SERVO_PIN, SERVO_MIN_ANGLE_DEG);
 
   // Initialize SD Card via SPI
+  Serial.println("[SETUP 2/5] Initializing SD Card...");
   initSD();
+  Serial.println("[SETUP 2/5] SD Card initialization completed ✅");
 
-  Serial.println("[SETUP] Loading saved state...");
+  Serial.println("[SETUP 3/5] Loading saved state from NVS...");
   prefs.begin("mk9_state", false);
   loadState();
+  Serial.println("[SETUP 3/5] NVS State loaded ✅");
 
-  Serial.println("[SETUP] Initializing AS5600 Encoders...");
+  Serial.println("[SETUP 4/5] Initializing AS5600 Encoders over I2C...");
   initAS5600();
+  Serial.println("[SETUP 4/5] AS5600 Encoders initialized ✅");
+
+  Serial.println("[SETUP 5/5] Configuring MQTT Client...");
 
   mqttClient.setId("cosmic3d-mk9-as5600");
   mqttClient.setConnectionTimeout(2000);
