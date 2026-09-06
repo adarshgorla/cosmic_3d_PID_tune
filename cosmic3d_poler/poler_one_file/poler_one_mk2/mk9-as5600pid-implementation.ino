@@ -55,7 +55,7 @@ const float MANUAL_JOG_MM = 10.0f;
 #define THETA_SERVO_PIN 40
 #define Z_LIMIT_PIN 38 // Vertical Z limit switch
 
-Servo myservo;
+Servo servoTheta;
 int currentServoAngle = SERVO_MIN_ANGLE_DEG;
 
 /*
@@ -800,6 +800,10 @@ void updateEncoderFromAS5600(int motorIndex) {
     return;
   }
 
+  if (motorIndex == 1) {
+    diff = -diff;
+  }
+
   rawAccumulator[motorIndex] += diff;
   long motorCounts = rawAccumulator[motorIndex] / GEAR_RATIO;
 
@@ -817,23 +821,6 @@ void updateEncoderFromAS5600(int motorIndex) {
 // AS5600 INIT
 // =============================================================================
 void initAS5600() {
-  // Perform I2C bus clock recovery in case SDA is stuck LOW by an un-reset
-  // slave
-  pinMode(I2C_SDA, INPUT_PULLUP);
-  pinMode(I2C_SCL, INPUT_PULLUP);
-  if (digitalRead(I2C_SDA) == LOW) {
-    Serial.println("[I2C] SDA pin stuck LOW. Attempting bus clock recovery...");
-    pinMode(I2C_SCL, OUTPUT);
-    for (int i = 0; i < 9; i++) {
-      digitalWrite(I2C_SCL, LOW);
-      delayMicroseconds(5);
-      digitalWrite(I2C_SCL, HIGH);
-      delayMicroseconds(5);
-    }
-    pinMode(I2C_SDA, INPUT_PULLUP);
-    pinMode(I2C_SCL, INPUT_PULLUP);
-  }
-
   Wire.begin(I2C_SDA, I2C_SCL);
   Wire.setClock(400000);
   Wire.setTimeOut(I2C_TIMEOUT_MS);
@@ -1114,32 +1101,29 @@ void mk9Setup() {
   Serial.println("[SETUP] Limit switch and heaters initialized.");
 
   // Initialize MG945 Servo for Theta Axis
-  Serial.println("[SETUP 1/5] Attaching MG945 Theta Servo...");
-  Serial.println("[SERVO] Setting period to 50Hz...");
+  Serial.println("[SETUP] Attaching MG945 Theta Servo...");
+  // Allocate Timer 3 only to avoid colliding with analogWrite LEDC timers
+  // (Timer 0)
+  ESP32PWM::allocateTimer(0);
+  ESP32PWM::allocateTimer(1);
+  ESP32PWM::allocateTimer(2);
+  ESP32PWM::allocateTimer(3);
+
   servoTheta.setPeriodHertz(50);
-  Serial.println("[SERVO] Attaching pin to ESP32Servo...");
   servoTheta.attach(THETA_SERVO_PIN, 500, 2400);
-  Serial.println("[SERVO] Setting initial angle...");
   setThetaServoAngle(SERVO_MIN_ANGLE_DEG);
-  Serial.printf(
-      "[SERVO] MG945 Theta Servo attached to GPIO %d (Min: %d deg) ✅\n",
-      THETA_SERVO_PIN, SERVO_MIN_ANGLE_DEG);
+  Serial.printf("[SERVO] MG945 Theta Servo attached to GPIO %d (Min: %d deg)\n",
+                THETA_SERVO_PIN, SERVO_MIN_ANGLE_DEG);
 
   // Initialize SD Card via SPI
-  Serial.println("[SETUP 2/5] Initializing SD Card...");
   initSD();
-  Serial.println("[SETUP 2/5] SD Card initialization completed ✅");
 
-  Serial.println("[SETUP 3/5] Loading saved state from NVS...");
+  Serial.println("[SETUP] Loading saved state...");
   prefs.begin("mk9_state", false);
   loadState();
-  Serial.println("[SETUP 3/5] NVS State loaded ✅");
 
-  Serial.println("[SETUP 4/5] Initializing AS5600 Encoders over I2C...");
+  Serial.println("[SETUP] Initializing AS5600 Encoders...");
   initAS5600();
-  Serial.println("[SETUP 4/5] AS5600 Encoders initialized ✅");
-
-  Serial.println("[SETUP 5/5] Configuring MQTT Client...");
 
   mqttClient.setId("cosmic3d-mk9-as5600");
   mqttClient.setConnectionTimeout(2000);
@@ -1504,10 +1488,10 @@ void mk9Loop() {
     }
     // Z Height Homing (drives DOWN towards Z_LIMIT_PIN at bed)
     if (!z_home) {
-      analogWrite(motorPinB1, 100);
-      analogWrite(motorPinB2, 0);
+      analogWrite(motorPinB2, 100);
+      analogWrite(motorPinB1, 0);
       if (digitalRead(Z_LIMIT_PIN) == LOW) {
-        analogWrite(motorPinB1, 0);
+        analogWrite(motorPinB2, 0);
         z_home = true;
         encoderCount[1] = 0;
         rawAccumulator[1] = 0;
@@ -1545,8 +1529,10 @@ void mk9Loop() {
     disableAllI2CChannels();
 
     setpointHome[0] = 0;
-    setpointHome[1] = zMmToEncoderCounts(10.0f); // 10 mm standoff
-    setpointHome[2] = SERVO_MIN_ANGLE_DEG;
+    setpointHome[1] = zMmToEncoderCounts(-10.0f); // 10 mm standoff
+    setpointHome[2] = 90;
+
+    servoTheta.write(90);
 
     lastTimePID = millis();
     for (int i = 0; i < 4; i++) {
@@ -1567,14 +1553,15 @@ void mk9Loop() {
 
     updateEncoderFromAS5600(0);
     updateEncoderFromAS5600(1);
+    servoTheta.write(90);
 
     long zError = setpointHome[1] - encoderCount[1];
     if (abs(zError) <= MOTION_TOLERANCE_COUNTS) {
       stopAllMotors();
-      Serial.println("[HOME] Polar homing sequence complete ✅");
       currentX = HOME_X;
       currentY = HOME_Y;
-      currentZ = 10.0f;
+      currentZ = -10.0f;
+      Serial.println("[HOME] Polar homing sequence complete ✅");
       sysState = STATE_IDLE;
     } else {
       driveMotor(1, calculatePID(1, setpointHome[1], dt));
