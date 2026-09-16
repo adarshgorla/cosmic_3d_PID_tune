@@ -1,0 +1,4 @@
+*.o
+*.DS_Store
+.DS_Store
+test_esp32_firmware
